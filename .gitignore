@@ -1,0 +1,28 @@
+# Python bytecode and cache directories.
+__pycache__/
+*.py[cod]
+*.pyo
+
+# pytest cache.
+.pytest_cache/
+
+# Coverage reports.
+.coverage
+htmlcov/
+
+# PyInstaller build artifacts.
+build/
+dist/
+*.spec
+
+# PyArmor output directories (should be chosen explicitly by the user).
+# Do not ignore "obfuscated/" here; users may name their output anything.
+
+# Virtual environments.
+.venv/
+venv/
+env/
+
+# Distribution packaging.
+*.egg-info/
+dist/
