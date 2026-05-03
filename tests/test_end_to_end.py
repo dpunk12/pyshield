@@ -15,6 +15,9 @@
 # session.  If PyArmor or PyInstaller are not installed, the fixture calls
 # pytest.skip() and all these tests are skipped with a clear message.
 #
+# IMPORTANT: built_demo now yields a tuple (binary_path, secret_path).
+# All tests must unpack it as: binary_path, secret_path = built_demo
+#
 # Test summary:
 #   1. test_obfuscation_hides_proprietary_strings
 #      Reads the binary as bytes and asserts that readable proprietary strings
@@ -36,6 +39,10 @@
 #   5. test_wrong_machine_license_is_rejected
 #      Generates a license locked to a fake machine ID, runs the binary,
 #      and asserts the exit code is non-zero and the output mentions "machine".
+#
+#   6. test_license_signed_with_different_secret_rejected
+#      Builds a binary, then generates a license using a DIFFERENT secret,
+#      and asserts that the binary refuses to run with that license.
 
 import datetime   # Used to compute yesterday's date for the expired license test.
 import json       # Used to read and modify license JSON files in tests.
@@ -49,7 +56,9 @@ import pytest     # Provides the mark.e2e decorator and assertion helpers.
 # Import the internal signing helper so the expired and wrong-machine license
 # tests can produce a validly signed but semantically invalid license without
 # needing an extra CLI round-trip.
+# NOTE: _sign_payload now requires a 'secret' parameter.
 from src.license_manager import _sign_payload, get_machine_id
+from src.build_secret import generate_secret   # Used to create a different secret.
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +81,7 @@ def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _make_license(path: str, machine_id=None, days=None) -> None:
+def _make_license(path: str, secret: bytes, machine_id=None, days=None) -> None:
     """Create a validly signed PyShield license file with custom fields.
 
     This helper is used by the license tests to produce license files with
@@ -80,8 +89,13 @@ def _make_license(path: str, machine_id=None, days=None) -> None:
     generate directly (because it would refuse to generate an already-expired
     license).
 
+    The license is signed with the provided secret, so it will pass the HMAC
+    check when verified with that same secret.
+
     Args:
         path: The file path where the license JSON will be written.
+        secret: The HMAC secret bytes to sign the license with.  This must
+                match the secret embedded in the binary under test.
         machine_id: If provided, this string is stored as the machine_id field.
                     Set to a fake hex string to create a wrong-machine license.
         days: If provided, the expiry date is set this many days from today.
@@ -104,10 +118,12 @@ def _make_license(path: str, machine_id=None, days=None) -> None:
         expiry_date = datetime.date.today() + datetime.timedelta(days=days)
         payload["expires"] = expiry_date.isoformat()
 
-    # Sign the payload using the same HMAC key used by src/license_manager.py.
-    # _sign_payload is imported from src.license_manager at the top of this file.
+    # Sign the payload using the provided HMAC secret.
+    # The secret must match the one embedded in the binary so the binary's
+    # license_check.validate_license() call will accept this license.
     payload["signature"] = _sign_payload(
-        {k: v for k, v in payload.items() if k != "signature"}
+        {k: v for k, v in payload.items() if k != "signature"},
+        secret,
     )
 
     # Write the signed license to disk.
@@ -132,12 +148,13 @@ def test_obfuscation_hides_proprietary_strings(built_demo):
     is actually hidden — not just "compiled", but encrypted.
 
     Args:
-        built_demo: Session-scoped fixture that provides the path to the
-                    compiled binary.
+        built_demo: Session-scoped fixture that provides a tuple of
+                    (binary_path, secret_path).
     """
 
-    # The path to the binary is provided by the conftest.py fixture.
-    binary_path = built_demo
+    # Unpack the fixture tuple.  binary_path is the compiled binary; we do not
+    # need secret_path in this test because we are not generating a license.
+    binary_path, _secret_path = built_demo
 
     # Read the entire binary as raw bytes.
     # Large binaries are typically 5-15 MB, which fits in memory easily.
@@ -177,15 +194,18 @@ def test_protected_binary_runs_correctly(built_demo, tmp_path):
     This proves that protection does not break the application logic.
 
     Args:
-        built_demo: Session-scoped fixture providing the binary path.
+        built_demo: Session-scoped fixture providing (binary_path, secret_path).
         tmp_path: pytest built-in fixture providing a per-test temp directory.
     """
 
-    binary_path = built_demo
+    # Unpack the fixture tuple.
+    binary_path, secret_path = built_demo
     repo_root = _repo_root()
 
     # Generate a valid license locked to this machine with a 10-year expiry.
     # This simulates a real deployment license that should pass all checks.
+    # Pass --secret-file so the license is signed with the same key that was
+    # embedded in the binary during the build.
     license_path = str(tmp_path / "valid.lic")
     license_result = subprocess.run(
         [
@@ -195,6 +215,7 @@ def test_protected_binary_runs_correctly(built_demo, tmp_path):
             "--output", license_path,
             "--machine-lock",
             "--days", "3650",     # Ten years — effectively never expires in testing.
+            "--secret-file", secret_path,
         ],
         capture_output=True,
         text=True,
@@ -262,11 +283,12 @@ def test_tamper_detection_rejects_modified_binary(built_demo, tmp_path):
     Any change to the binary will cause the hash to mismatch.
 
     Args:
-        built_demo: Session-scoped fixture providing the binary path.
+        built_demo: Session-scoped fixture providing (binary_path, secret_path).
         tmp_path: pytest built-in fixture providing a per-test temp directory.
     """
 
-    original_binary_path = built_demo
+    # Unpack the fixture tuple.  We do not need secret_path in this test.
+    original_binary_path, _secret_path = built_demo
     repo_root = _repo_root()
 
     # The hash sidecar file is created by src/packager.py next to the binary.
@@ -348,17 +370,23 @@ def test_expired_license_is_rejected(built_demo, tmp_path):
     output contains the word "expired".
 
     Args:
-        built_demo: Session-scoped fixture providing the binary path.
+        built_demo: Session-scoped fixture providing (binary_path, secret_path).
         tmp_path: pytest built-in fixture providing a per-test temp directory.
     """
 
-    binary_path = built_demo
+    # Unpack the fixture tuple.
+    binary_path, secret_path = built_demo
     repo_root = _repo_root()
+
+    # Read the build secret from the secret file so we can sign the license
+    # with the same key that was embedded in the binary.
+    import pathlib
+    build_secret = pathlib.Path(secret_path).read_bytes()
 
     # Create a license that expired yesterday using the _make_license helper.
     # days=-1 means the expiry date is set to yesterday.
     expired_license_path = str(tmp_path / "expired.lic")
-    _make_license(expired_license_path, days=-1)
+    _make_license(expired_license_path, secret=build_secret, days=-1)
 
     # Provide a real input CSV so the binary gets far enough to check the license.
     input_csv = os.path.join(repo_root, "examples", "demo_app", "sample_input.csv")
@@ -396,19 +424,24 @@ def test_wrong_machine_license_is_rejected(built_demo, tmp_path):
     to generate the correct license.
 
     Args:
-        built_demo: Session-scoped fixture providing the binary path.
+        built_demo: Session-scoped fixture providing (binary_path, secret_path).
         tmp_path: pytest built-in fixture providing a per-test temp directory.
     """
 
-    binary_path = built_demo
+    # Unpack the fixture tuple.
+    binary_path, secret_path = built_demo
     repo_root = _repo_root()
+
+    # Read the build secret from the secret file.
+    import pathlib
+    build_secret = pathlib.Path(secret_path).read_bytes()
 
     # Create a license locked to a fake machine ID.
     # "a" * 64 is a valid-looking 64-character hex string, but it will not
     # match any real machine.
     fake_machine_id = "a" * 64
     wrong_machine_license_path = str(tmp_path / "wrong_machine.lic")
-    _make_license(wrong_machine_license_path, machine_id=fake_machine_id)
+    _make_license(wrong_machine_license_path, secret=build_secret, machine_id=fake_machine_id)
 
     # Provide a real input CSV.
     input_csv = os.path.join(repo_root, "examples", "demo_app", "sample_input.csv")
@@ -441,4 +474,68 @@ def test_wrong_machine_license_is_rejected(built_demo, tmp_path):
         f"Expected the actual machine ID ({actual_machine_id}) to appear in the "
         f"error output so users know what to send to support, "
         f"but it was not found. Output: {combined_output!r}"
+    )
+
+
+@pytest.mark.e2e
+def test_license_signed_with_different_secret_rejected(built_demo, tmp_path):
+    """Verify that a license signed with a different secret is rejected.
+
+    This test proves that the per-build secret hardening actually works:
+    if someone generates a license using a secret that does not match the
+    one embedded in the binary, the binary must refuse to run.
+
+    Steps:
+    1. Get the binary built by the built_demo fixture (uses secret A).
+    2. Generate a DIFFERENT random secret (secret B).
+    3. Create a license signed with secret B.
+    4. Run the binary with that license.
+    5. Assert the binary rejects the license (exit code non-zero).
+
+    Args:
+        built_demo: Session-scoped fixture providing (binary_path, secret_path).
+        tmp_path: pytest built-in fixture providing a per-test temp directory.
+    """
+
+    # Unpack the fixture tuple.
+    binary_path, _secret_path = built_demo
+    repo_root = _repo_root()
+
+    # Generate a completely different secret — not the one embedded in the binary.
+    # With 32 bytes of entropy, the probability of accidental collision is negligible.
+    different_secret = generate_secret()
+
+    # Create a license signed with the different secret.
+    # This license will have a valid HMAC signature, but for the wrong key.
+    wrong_secret_license_path = str(tmp_path / "wrong_secret.lic")
+    _make_license(wrong_secret_license_path, secret=different_secret)
+
+    # Provide a real input CSV so the binary gets far enough to check the license.
+    input_csv = os.path.join(repo_root, "examples", "demo_app", "sample_input.csv")
+    output_csv = str(tmp_path / "should_not_be_created.csv")
+
+    # Run the binary with the wrong-secret license.
+    run_result = subprocess.run(
+        [binary_path, "process", input_csv, output_csv, "--license", wrong_secret_license_path],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    # The binary must reject the license and exit with a non-zero code.
+    assert run_result.returncode != 0, (
+        "Binary accepted a license signed with a different secret. "
+        "This is a critical failure: it means the per-build secret is not "
+        "being verified.  An attacker could forge licenses using any secret."
+    )
+
+    # The error output should mention "signature" or "invalid".
+    combined_output = run_result.stdout + run_result.stderr
+    assert (
+        "signature" in combined_output.lower()
+        or "invalid" in combined_output.lower()
+        or "tamper" in combined_output.lower()
+    ), (
+        f"Expected 'signature', 'invalid', or 'tamper' in the error output, "
+        f"but got: {combined_output!r}"
     )

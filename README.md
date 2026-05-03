@@ -145,6 +145,8 @@ Arguments:
 - --output: Directory where the final executable will be placed. Required.
 - --name: Name for the output executable. Defaults to "app".
 
+Secrets and HMAC keys: each run of "pyshield build" generates a fresh 32-byte HMAC secret and writes it to dist/.pyshield_secret. This secret is embedded inside the PyArmor-obfuscated binary and is used to sign and verify licenses. The secret file is listed in .gitignore and must never be committed to source control. To use a stable key across builds, set the PYSHIELD_HMAC_KEY environment variable to a 64-character hex string before running the build. See docs/SECRETS.md for full details.
+
 ### pyshield obfuscate
 
 Runs only the obfuscation step.
@@ -171,6 +173,7 @@ Arguments:
 - --output: Path for the generated license file. Required.
 - --machine-lock: If present, binds the license to the current machine's hardware identifiers.
 - --days: Number of days until the license expires. If omitted, the license does not expire.
+- --secret-file: Path to the .pyshield_secret file written by "pyshield build". Defaults to dist/.pyshield_secret. The PYSHIELD_HMAC_KEY environment variable is checked first.
 
 ### pyshield license verify
 
@@ -178,6 +181,7 @@ Verifies a license file.
 
 Arguments:
 - --license: Path to the license file to verify. Required.
+- --secret-file: Path to the .pyshield_secret file written by "pyshield build". Defaults to dist/.pyshield_secret. The PYSHIELD_HMAC_KEY environment variable is checked first.
 
 ### pyshield hash verify
 

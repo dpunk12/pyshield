@@ -64,6 +64,10 @@ For a production deployment to ARM Macs, the binary should be built on an ARM Ma
 
 ## Can someone extract the embedded license secret?
 
-The HMAC key used to sign licenses is embedded in the protected binary as part of the obfuscated Python code. After PyArmor protection, this key is encrypted and not visible as a readable string in the binary. However, as documented in LIMITATIONS.md, a sufficiently determined attacker who captures the decrypted bytecode from memory could extract the key and use it to generate unlimited valid licenses.
+The HMAC key used to sign licenses is now a per-build secret generated freshly by every run of "pyshield build". It is embedded inside the protected binary as part of the PyArmor-obfuscated Python code. Because PyArmor encrypts the bytecode, the key is not visible as a readable string in the binary.
 
-In the default open-source configuration of PyShield, a fixed well-known HMAC key is used. For a production deployment with real commercial value at stake, we recommend replacing this key with a per-deployment secret that is generated during the build process. This is a one-line change in src/license_manager.py and license_check.py. We can assist with this customisation.
+The practical consequence of the per-build model is that an attacker who reverse-engineers one customer's binary and extracts its key can only forge licenses for that specific binary. They cannot use the recovered key to forge licenses for any other customer's binary, because each build has its own independently generated key.
+
+The secret is never committed to the repository. It is stored in dist/.pyshield_secret, which is listed in .gitignore. Customers who want an extra-strong setup, or who need a stable key across rebuilds (for example, to reissue licenses without rebuilding), can supply their own key via the PYSHIELD_HMAC_KEY environment variable or through a GitHub Actions repository secret. See docs/SECRETS.md for instructions.
+
+As documented in LIMITATIONS.md, a sufficiently determined attacker who captures the decrypted bytecode from memory could still extract the embedded key and use it to generate licenses for that specific build. Per-build secrets reduce the blast radius of such a compromise but do not eliminate the underlying risk. For truly high-value algorithms where license forgery would be catastrophic, the server-side execution model remains the strongest option.

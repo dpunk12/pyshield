@@ -48,6 +48,8 @@ The license validation logic runs inside the protected binary on the user's mach
 
 In practice, patching a PyArmor-protected binary is significantly harder than patching a plain Python script, because the validation logic is inside the encrypted bytecode. But it is not impossible.
 
+With per-build secrets, an attacker who reverse-engineers one customer's binary cannot use the recovered HMAC key to forge licenses for any other customer. Each build embeds its own independently generated key, so the blast radius of a single compromise is limited to that one build. An attacker who wants to target a second customer must repeat the full reverse-engineering effort against that customer's binary.
+
 Remote license validation (phoning home to a server to check the license) would be stronger. PyShield does not implement remote validation in its current form. If you need it, consider pairing PyShield with a server-side activation service.
 
 ## Why this is still worth doing — the economic argument
