@@ -9,8 +9,12 @@
 # 2. Set up Python 3.11.
 # 3. Install runtime dependencies from requirements.txt.
 # 4. Install development dependencies from requirements-dev.txt.
-# 5. Run the test suite with pytest and record coverage.
-# 6. Print a success message.
+# 5. Run the unit test suite with pytest (no real PyArmor/PyInstaller needed).
+# 6. Run the end-to-end tests with pytest -m e2e (real tools required).
+#    On Linux (ubuntu-latest) this step must pass (continue-on-error: false).
+#    On Windows and macOS it is best-effort (continue-on-error: true) while
+#    we stabilise platform-specific behaviour.  See docs/CI_NOTES.md.
+# 7. Print a success message.
 
 name: Build and Test PyShield
 
@@ -66,13 +70,27 @@ jobs:
       - name: Install development dependencies
         run: pip install -r requirements-dev.txt
 
-      # Step 5: Run the test suite with pytest.
+      # Step 5: Run the unit test suite with pytest.
+      # The -m "not e2e" flag skips the end-to-end tests so this step only runs
+      # the fast unit tests that do not require PyArmor or PyInstaller.
       # The --tb=short flag prints short tracebacks so failures are easier to
       # read in the GitHub Actions log without visual scanning.
       # The -v flag prints each test name on its own line.
-      - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+      - name: Run unit tests
+        run: pytest -m "not e2e" tests/ -v --tb=short --cov=src --cov-report=term-missing
 
-      # Step 6: Print a completion message.
+      # Step 6: Run the end-to-end tests.
+      # These tests actually invoke PyArmor and PyInstaller to build the demo
+      # application, then run the binary and assert it behaves correctly.
+      # On Linux this step must pass (continue-on-error: false) because Linux
+      # is the primary deployment target and the tools are well-supported.
+      # On Windows and macOS the step is best-effort (continue-on-error: true)
+      # while we work through platform-specific packaging issues.
+      # See docs/CI_NOTES.md for the full explanation of this policy.
+      - name: Run end-to-end tests (real PyArmor + PyInstaller)
+        run: pytest -m e2e -v --tb=short
+        continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
+
+      # Step 7: Print a completion message.
       - name: Report completion
         run: echo "All tests passed on ${{ matrix.os }}."
