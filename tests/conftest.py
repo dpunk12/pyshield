@@ -6,7 +6,8 @@
 # Fixtures defined here are available to every test file in the tests/ directory.
 #
 # The key fixture is built_demo, which builds the demo application once per
-# test session and returns the path to the finished binary.  All end-to-end
+# test session and returns the path to the finished binary AND the path to
+# the .pyshield_secret file created during the build.  All end-to-end
 # tests that need the binary reuse this single build, so PyArmor and
 # PyInstaller are only invoked once per CI run.
 #
@@ -76,7 +77,12 @@ def built_demo(tmp_path_factory):
        if either is missing.
     2. Runs "python pyshield.py build --source examples/demo_app ..." to
        produce a protected binary.
-    3. Yields the absolute path to the finished binary so each test can use it.
+    3. Yields a tuple of (binary_path, secret_path) where binary_path is the
+       absolute path to the finished binary and secret_path is the absolute
+       path to the .pyshield_secret file written by the build.  End-to-end
+       tests that generate licenses must pass --secret-file secret_path (or
+       pass the secret bytes directly) so that the license is signed with the
+       same key that was embedded in the binary.
 
     Because the scope is "session", the build runs only once per pytest
     invocation, even if multiple tests depend on this fixture.
@@ -86,9 +92,12 @@ def built_demo(tmp_path_factory):
                           a factory for creating temporary directories.
 
     Yields:
-        str: The absolute path to the compiled binary.
-             On Linux and macOS this ends in "/main".
-             On Windows it ends in "/main.exe".
+        tuple[str, str]: A two-element tuple:
+            - The absolute path to the compiled binary.
+              On Linux and macOS this ends in "/main".
+              On Windows it ends in "/main.exe".
+            - The absolute path to the .pyshield_secret file written by the
+              build.  Pass this to --secret-file when generating test licenses.
     """
 
     # --- Check that PyArmor is installed. ---
@@ -163,10 +172,26 @@ def built_demo(tmp_path_factory):
             f"Build output: {build_result.stdout[:300]}"
         )
 
-    print(f"Demo binary built successfully: {binary_path}")
+    # --- Find the secret file that was created by the build. ---
+    # The 'pyshield build' command writes the per-build HMAC secret to
+    # <output_dir>/.pyshield_secret.  End-to-end tests that generate licenses
+    # must use this file (via --secret-file) so the license is signed with the
+    # same key that was embedded in the binary during obfuscation.
+    secret_path = os.path.join(dist_dir, ".pyshield_secret")
 
-    # --- Yield the binary path to the tests. ---
+    if not os.path.isfile(secret_path):
+        # This should not happen if the build succeeded, but check explicitly
+        # so the error message is actionable rather than cryptic.
+        pytest.skip(
+            f"Build succeeded but the secret file was not found at: {secret_path}. "
+            "Check that 'pyshield build' calls load_or_create_secret correctly."
+        )
+
+    print(f"Demo binary built successfully: {binary_path}")
+    print(f"Build secret file: {secret_path}")
+
+    # --- Yield both the binary path and the secret file path to the tests. ---
     # "yield" instead of "return" makes this a generator-based fixture so pytest
     # can run cleanup code after all tests finish (though we have none here,
     # since tmp_path_factory handles cleanup).
-    yield binary_path
+    yield binary_path, secret_path

@@ -18,11 +18,16 @@
 # src modules, which pass arguments as lists.
 
 import argparse   # Standard library module for parsing command-line arguments.
+import os         # Used to resolve paths and read environment variables.
+import pathlib    # Used to represent and manipulate file paths.
 import sys        # Used to read the platform name and exit with a status code.
-import os         # Used to resolve paths for display in status messages.
 
 # Import the PyShield modules that implement each operation.
 # Each import is on its own line with a comment so it is easy to follow.
+from src.build_secret import (
+    load_or_create_secret,   # Loads or generates the per-build HMAC secret.
+    secret_fingerprint,      # Returns the first 8 hex chars of SHA-256(secret).
+)
 from src.obfuscator import obfuscate          # Wraps PyArmor.
 from src.packager import package              # Wraps PyInstaller.
 from src.license_manager import (
@@ -38,7 +43,13 @@ from src.tamper import (
 def cmd_build(args: argparse.Namespace) -> int:
     """Handle the 'build' subcommand.
 
-    Runs obfuscation and packaging in sequence.
+    Runs obfuscation and packaging in sequence.  Before obfuscation begins,
+    a per-build HMAC secret is generated (or loaded from the environment
+    variable PYSHIELD_HMAC_KEY or from a pre-existing secret file).  The
+    secret is embedded into the source tree as _pyshield_runtime_constants.py
+    so PyArmor encrypts it along with the rest of the source.  After
+    obfuscation finishes, the unobfuscated constants file is deleted so the
+    plaintext key is never left on disk in a readable form.
 
     Parameters
     ----------
@@ -56,12 +67,76 @@ def cmd_build(args: argparse.Namespace) -> int:
     """
 
     # Tell the user what is about to happen.
-    print(f"Running build for source directory: {args.source}")
+    print(f"Step 1 of 4: Preparing build secret for source directory: {args.source}")
 
-    # Step 1: Obfuscate the source code.
+    # -------------------------------------------------------------------------
+    # Step 1 of 4: Load or generate the per-build HMAC secret.
+    # -------------------------------------------------------------------------
+    # The secret file is stored in the output directory alongside the binary.
+    # .gitignore includes .pyshield_secret so it cannot be accidentally committed.
+    output_path = pathlib.Path(args.output)
+    secret_file = output_path / ".pyshield_secret"
+
+    try:
+        # load_or_create_secret checks PYSHIELD_HMAC_KEY env var first,
+        # then looks for an existing file, then generates a fresh random secret.
+        build_secret = load_or_create_secret(secret_file)
+    except ValueError as exc:
+        # The environment variable was set but invalid.
+        print(f"Build failed: bad HMAC secret configuration: {exc}")
+        return 1
+
+    # Log only the fingerprint — never the secret itself.
+    # The fingerprint is the first 8 hex chars of SHA-256(secret), which is
+    # safe to include in build logs and audit trails because SHA-256 is a
+    # one-way function: the fingerprint cannot be reversed to recover the secret.
+    fingerprint = secret_fingerprint(build_secret)
+    print(f"Build secret fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
+
+    # -------------------------------------------------------------------------
+    # Step 2 of 4: Write the runtime constants file into the source tree.
+    # -------------------------------------------------------------------------
+    # _pyshield_runtime_constants.py contains the HMAC key as a Python literal.
+    # Placing it in the source tree means PyArmor will encrypt it along with
+    # the rest of the code.  We delete the unobfuscated copy after PyArmor runs.
+    source_path = pathlib.Path(args.source).resolve()
+    constants_file = source_path / "_pyshield_runtime_constants.py"
+
+    print(
+        f"Step 2 of 4: Embedding build secret into source tree "
+        f"(fingerprint: {fingerprint})."  # lgtm[py/clear-text-logging-sensitive-data]
+    )
+
+    try:
+        # Write a minimal Python module that just defines the HMAC key.
+        # bytes.fromhex is used at import time so the bytes literal in the
+        # source is a hex string, which is readable and unambiguous.
+        constants_content = (
+            "# _pyshield_runtime_constants.py\n"
+            "#\n"
+            "# This file is generated automatically by 'pyshield build'.\n"
+            "# It contains the per-build HMAC secret in an obfuscatable form.\n"
+            "# PyArmor encrypts this file so the key is not readable in the\n"
+            "# final binary.  The unobfuscated copy of this file is deleted\n"
+            "# after obfuscation completes.\n"
+            "#\n"
+            "# Do NOT commit this file to source control.  It is .gitignore'd.\n"
+            "# Do NOT distribute this file directly; only the obfuscated binary\n"
+            "# should be delivered to end users.\n"
+            "\n"
+            f"HMAC_KEY = bytes.fromhex(\"{build_secret.hex()}\")\n"
+        )
+        constants_file.write_text(constants_content, encoding="utf-8")
+    except OSError as exc:
+        print(f"Build failed: could not write runtime constants file: {exc}")
+        return 1
+
+    # -------------------------------------------------------------------------
+    # Step 3 of 4: Obfuscate the source code (including the constants file).
+    # -------------------------------------------------------------------------
     # We place the obfuscated files in a subdirectory of the output directory.
     obfuscated_dir = os.path.join(args.output, "obfuscated")
-    print(f"Running obfuscation. Output will go to: {obfuscated_dir}")
+    print(f"Step 3 of 4: Running obfuscation. Output will go to: {obfuscated_dir}")
 
     try:
         # Call the obfuscator module.  It returns the resolved output path.
@@ -70,10 +145,18 @@ def cmd_build(args: argparse.Namespace) -> int:
     except Exception as exc:
         # Print a descriptive error message and return failure.
         print(f"Obfuscation failed: {exc}")
+        # Clean up the unobfuscated constants file even if obfuscation failed.
+        _delete_constants_file(constants_file)
         return 1
+    finally:
+        # Always delete the unobfuscated constants file so the plaintext key
+        # is never left in the source tree after the build completes or fails.
+        _delete_constants_file(constants_file)
 
-    # Step 2: Package the obfuscated code into a standalone executable.
-    print(f"Running packaging. Entry point: {args.entry}. Output: {args.output}")
+    # -------------------------------------------------------------------------
+    # Step 4 of 4: Package the obfuscated code into a standalone executable.
+    # -------------------------------------------------------------------------
+    print(f"Step 4 of 4: Running packaging. Entry point: {args.entry}. Output: {args.output}")
 
     try:
         # Determine the platform name from the current system for labelling.
@@ -92,9 +175,39 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"Packaging failed: {exc}")
         return 1
 
-    # Report success.
-    print("Build complete.")
+    # Report success with the fingerprint so it appears in CI logs.
+    print(f"Build complete. Secret fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
     return 0
+
+
+def _delete_constants_file(constants_file: pathlib.Path) -> None:
+    """Delete the unobfuscated _pyshield_runtime_constants.py file if it exists.
+
+    This is a cleanup helper called by cmd_build whether obfuscation succeeds
+    or fails.  The file must be deleted so the plaintext HMAC key is never
+    left in the source tree after the build step.
+
+    Parameters
+    ----------
+    constants_file : pathlib.Path
+        Path to the constants file to delete.
+
+    Returns
+    -------
+    None
+    """
+
+    # Only attempt to delete the file if it actually exists.
+    if constants_file.exists():
+        try:
+            constants_file.unlink()
+        except OSError as exc:
+            # Log a warning but do not fail the build — the file may have
+            # already been cleaned up or the filesystem may be read-only.
+            print(
+                f"Warning: could not delete runtime constants file "
+                f"{constants_file}: {exc}"
+            )
 
 
 def cmd_obfuscate(args: argparse.Namespace) -> int:
@@ -163,12 +276,19 @@ def cmd_package(args: argparse.Namespace) -> int:
 def cmd_license_generate(args: argparse.Namespace) -> int:
     """Handle the 'license generate' subcommand.
 
-    Generates a new signed license file.
+    Generates a new signed license file.  The HMAC secret used to sign the
+    license is loaded from (in order of preference):
+    1. The file specified by --secret-file (if provided).
+    2. The PYSHIELD_HMAC_KEY environment variable (64 hex chars).
+    3. The default secret file at dist/.pyshield_secret.
+
+    If none of these sources yields a valid secret, the command fails with a
+    clear error message explaining what to do.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Expected attributes: output, machine_lock, days.
+        Expected attributes: output, machine_lock, days, secret_file.
 
     Returns
     -------
@@ -189,11 +309,56 @@ def cmd_license_generate(args: argparse.Namespace) -> int:
     else:
         print("License will not expire.")
 
+    # -------------------------------------------------------------------------
+    # Resolve the HMAC secret.
+    # -------------------------------------------------------------------------
+    # The secret must match the one embedded in the protected binary.
+    # We try three sources in order: --secret-file argument, then the default
+    # file path dist/.pyshield_secret.  The environment variable
+    # PYSHIELD_HMAC_KEY is checked automatically by load_or_create_secret
+    # before looking at the file.
+
+    # Determine which secret file path to use.
+    # The --secret-file argument takes precedence over the default path.
+    if args.secret_file:
+        # The user explicitly provided a path.
+        secret_path = pathlib.Path(args.secret_file)
+    else:
+        # Fall back to the conventional location written by "pyshield build".
+        secret_path = pathlib.Path("dist") / ".pyshield_secret"
+
+    # Try to load the secret.  If neither the env var nor the file is present,
+    # load_or_create_secret would generate a new random secret — but for license
+    # generation we do NOT want to silently create a random secret because the
+    # license would then be signed with a key that does not match any binary.
+    # So we check explicitly before calling load_or_create_secret.
+    env_key = os.environ.get("PYSHIELD_HMAC_KEY")
+    if env_key is None and not secret_path.exists():
+        print(
+            "Cannot generate license: no HMAC secret available. "
+            f"Provide --secret-file pointing to a .pyshield_secret file, "
+            "or set the PYSHIELD_HMAC_KEY environment variable. "
+            "The secret file is created automatically by 'pyshield build'."
+        )
+        return 1
+
+    try:
+        build_secret = load_or_create_secret(secret_path)
+    except ValueError as exc:
+        print(f"License generation failed: bad HMAC secret configuration: {exc}")
+        return 1
+
+    # Log the fingerprint so the user can confirm they used the right key.
+    # The fingerprint is the first 8 hex chars of SHA-256(secret): safe to print.
+    fingerprint = secret_fingerprint(build_secret)
+    print(f"Using secret with fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
+
     try:
         license_path = generate_license(
             output_path=args.output,
             machine_lock=args.machine_lock,
             days=args.days or 0,
+            secret=build_secret,
         )
         print(f"License generated successfully. File is at: {license_path}")
     except Exception as exc:
@@ -207,11 +372,18 @@ def cmd_license_verify(args: argparse.Namespace) -> int:
     """Handle the 'license verify' subcommand.
 
     Verifies an existing license file against the current machine and date.
+    The HMAC secret used to verify the signature is loaded from (in order):
+    1. The file specified by --secret-file (if provided).
+    2. The PYSHIELD_HMAC_KEY environment variable (64 hex chars).
+    3. The default secret file at dist/.pyshield_secret.
+
+    If none of these sources yields a valid secret, the command fails with a
+    clear error message.
 
     Parameters
     ----------
     args : argparse.Namespace
-        Expected attributes: license.
+        Expected attributes: license, secret_file.
 
     Returns
     -------
@@ -221,8 +393,31 @@ def cmd_license_verify(args: argparse.Namespace) -> int:
 
     print(f"Verifying license file: {args.license}")
 
+    # -------------------------------------------------------------------------
+    # Resolve the HMAC secret.
+    # -------------------------------------------------------------------------
+    if args.secret_file:
+        secret_path = pathlib.Path(args.secret_file)
+    else:
+        secret_path = pathlib.Path("dist") / ".pyshield_secret"
+
+    # Fail clearly if no secret source is available.
+    env_key = os.environ.get("PYSHIELD_HMAC_KEY")
+    if env_key is None and not secret_path.exists():
+        print(
+            "Cannot verify license: no HMAC secret available. "
+            "Provide --secret-file or set PYSHIELD_HMAC_KEY environment variable."
+        )
+        return 1
+
     try:
-        verify_license(args.license)
+        build_secret = load_or_create_secret(secret_path)
+    except ValueError as exc:
+        print(f"License verification failed: bad HMAC secret configuration: {exc}")
+        return 1
+
+    try:
+        verify_license(args.license, secret=build_secret)
         print("License is valid.")
     except (FileNotFoundError, ValueError) as exc:
         print(f"License verification failed: {exc}")
@@ -421,6 +616,17 @@ def build_parser() -> argparse.ArgumentParser:
             "If not supplied or 0, the license does not expire."
         ),
     )
+    lic_gen.add_argument(
+        "--secret-file",
+        dest="secret_file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to the .pyshield_secret file written by 'pyshield build'.  "
+            "Defaults to dist/.pyshield_secret.  "
+            "The PYSHIELD_HMAC_KEY environment variable is checked first."
+        ),
+    )
     lic_gen.set_defaults(func=cmd_license_generate)
 
     # 'license verify' sub-subcommand.
@@ -436,6 +642,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--license",
         required=True,
         help="Path to the license file to verify.",
+    )
+    lic_ver.add_argument(
+        "--secret-file",
+        dest="secret_file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to the .pyshield_secret file written by 'pyshield build'.  "
+            "Defaults to dist/.pyshield_secret.  "
+            "The PYSHIELD_HMAC_KEY environment variable is checked first."
+        ),
     )
     lic_ver.set_defaults(func=cmd_license_verify)
 

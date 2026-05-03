@@ -14,7 +14,18 @@
 #    On Linux (ubuntu-latest) this step must pass (continue-on-error: false).
 #    On Windows and macOS it is best-effort (continue-on-error: true) while
 #    we stabilise platform-specific behaviour.  See docs/CI_NOTES.md.
-# 7. Print a success message.
+# 7. Print the build secret fingerprint as a post-build step.
+# 8. Print a success message.
+#
+# PYSHIELD_HMAC_KEY:
+#   The PYSHIELD_HMAC_KEY environment variable controls the HMAC secret used
+#   to sign licenses during the build.  In CI, we read it from
+#   secrets.PYSHIELD_HMAC_KEY if that secret is configured in the repository.
+#   For forks and public contributors who do not have the repository secret,
+#   we fall back to a publicly-documented test value of "00" repeated 32 times
+#   (64 zeros).  This value is NOT secret; it is documented here and in
+#   docs/SECRETS.md so that everyone who reads the workflow understands it.
+#   Do NOT use this fallback value for any production build.
 
 name: Build and Test PyShield
 
@@ -50,6 +61,15 @@ jobs:
 
     # Name the job so its purpose is clear in the GitHub Actions UI.
     name: Test on ${{ matrix.os }}
+
+    # Set the PYSHIELD_HMAC_KEY environment variable for this job.
+    # If the repository has a PYSHIELD_HMAC_KEY secret configured (for
+    # non-fork builds by the repo owner), use that.  Otherwise fall back
+    # to the public test value "00" * 32 (64 zero hex digits), which is
+    # a known safe value documented in docs/SECRETS.md.  This fallback
+    # means CI still passes on forks and for first-time contributors.
+    env:
+      PYSHIELD_HMAC_KEY: ${{ secrets.PYSHIELD_HMAC_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
 
     steps:
       # Step 1: Check out the repository code.
@@ -91,6 +111,25 @@ jobs:
         run: pytest -m e2e -v --tb=short
         continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
 
-      # Step 7: Print a completion message.
+      # Step 7: Print the build secret fingerprint.
+      # We print only the fingerprint (first 8 hex chars of SHA-256 of the key),
+      # never the key itself.  The fingerprint is safe to include in CI logs.
+      # This step confirms which secret was active during the build.
+      - name: Print build secret fingerprint
+        run: |
+          python -c "
+          import os, hashlib
+          key_hex = os.environ.get('PYSHIELD_HMAC_KEY', '')
+          if len(key_hex) == 64:
+              key_bytes = bytes.fromhex(key_hex)
+              fingerprint = hashlib.sha256(key_bytes).hexdigest()[:8]
+              print('Build secret fingerprint: ' + fingerprint)
+              if key_hex == '0' * 64:
+                  print('Note: using public test fallback key (all zeros). Not for production.')
+          else:
+              print('Warning: PYSHIELD_HMAC_KEY is not set or invalid; fingerprint unavailable.')
+          "
+
+      # Step 8: Print a completion message.
       - name: Report completion
         run: echo "All tests passed on ${{ matrix.os }}."

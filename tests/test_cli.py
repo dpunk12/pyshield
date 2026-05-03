@@ -84,11 +84,15 @@ def test_license_generate_parses_all_arguments():
         "--output", "my.lic",
         "--machine-lock",
         "--days", "30",
+        "--secret-file", "dist/.pyshield_secret",
     ])
 
     assert args.output == "my.lic", "output should be 'my.lic'."
     assert args.machine_lock is True, "machine_lock should be True."
     assert args.days == 30, "days should be 30."
+    assert args.secret_file == "dist/.pyshield_secret", (
+        "secret_file should be 'dist/.pyshield_secret'."
+    )
 
 
 def test_license_generate_machine_lock_defaults_to_false():
@@ -101,6 +105,8 @@ def test_license_generate_machine_lock_defaults_to_false():
     ])
 
     assert args.machine_lock is False, "machine_lock should default to False."
+    # secret_file should also default to None when not provided.
+    assert args.secret_file is None, "secret_file should default to None."
 
 
 def test_license_verify_parses_license_argument():
@@ -110,6 +116,24 @@ def test_license_verify_parses_license_argument():
     args = parser.parse_args(["license", "verify", "--license", "product.lic"])
 
     assert args.license == "product.lic", "license should be 'product.lic'."
+    # secret_file should default to None when not provided.
+    assert args.secret_file is None, "secret_file should default to None."
+
+
+def test_license_verify_parses_secret_file_argument():
+    """The 'license verify' subcommand should parse --secret-file correctly."""
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "license", "verify",
+        "--license", "product.lic",
+        "--secret-file", "build/.pyshield_secret",
+    ])
+
+    assert args.license == "product.lic", "license should be 'product.lic'."
+    assert args.secret_file == "build/.pyshield_secret", (
+        "secret_file should be 'build/.pyshield_secret'."
+    )
 
 
 def test_hash_verify_parses_arguments():
