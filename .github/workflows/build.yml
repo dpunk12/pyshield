@@ -1,0 +1,78 @@
+# .github/workflows/build.yml
+#
+# This GitHub Actions workflow builds PyShield on Windows, Linux, and macOS.
+#
+# It runs on every push to any branch and on every pull request targeting main.
+#
+# Steps for each platform:
+# 1. Check out the repository.
+# 2. Set up Python 3.11.
+# 3. Install runtime dependencies from requirements.txt.
+# 4. Install development dependencies from requirements-dev.txt.
+# 5. Run the test suite with pytest and record coverage.
+# 6. Print a success message.
+
+name: Build and Test PyShield
+
+# Trigger the workflow on push to any branch or on a pull request to main.
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+
+# Restrict the GITHUB_TOKEN to read-only access.  The workflow only needs to
+# check out code; it does not write to the repository or publish packages.
+permissions:
+  contents: read
+
+# Define a single job called 'test' that runs on all three platforms.
+jobs:
+  test:
+    # Use a matrix strategy to run the same steps on three operating systems.
+    strategy:
+      # Do not cancel the remaining platforms if one fails.
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest    # Linux runner.
+          - windows-latest   # Windows runner.
+          - macos-latest     # macOS runner.
+
+    # The 'runs-on' key picks the runner from the matrix.
+    runs-on: ${{ matrix.os }}
+
+    # Name the job so its purpose is clear in the GitHub Actions UI.
+    name: Test on ${{ matrix.os }}
+
+    steps:
+      # Step 1: Check out the repository code.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Step 2: Install Python 3.11 on the runner.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step 3: Upgrade pip and install runtime dependencies.
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      # Step 4: Install development dependencies for running tests.
+      - name: Install development dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Step 5: Run the test suite with pytest.
+      # The --tb=short flag prints short tracebacks so failures are easier to
+      # read in the GitHub Actions log without visual scanning.
+      # The -v flag prints each test name on its own line.
+      - name: Run tests
+        run: pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+
+      # Step 6: Print a completion message.
+      - name: Report completion
+        run: echo "All tests passed on ${{ matrix.os }}."
