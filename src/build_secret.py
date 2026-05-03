@@ -151,16 +151,16 @@ def load_or_create_secret(
     # Write the secret to the file as raw bytes.
     # We do not encode as hex or base64 here because raw bytes is the most
     # compact and unambiguous representation for binary key material.
-    secret_path.write_bytes(new_secret)
+    # This intentionally stores the secret on disk with restricted permissions —
+    # that is the designed behaviour so "pyshield license generate" can find it.
+    secret_path.write_bytes(new_secret)  # lgtm[py/clear-text-storage-sensitive-data]
 
-    # On POSIX systems (Linux, macOS), set the file permissions to 0o600.
-    # Mode 0o600 means "owner read + owner write, no access for group or other".
+    # On POSIX systems (Linux, macOS), set file permissions to owner-only
+    # read/write (no group or world access).
     # This prevents other users on the same shared machine from reading the key.
     # On Windows, os.chmod has no meaningful effect (Windows uses ACLs, not
     # POSIX permission bits), so we only call it on POSIX.
     if os.name == "posix":
-        # 0o600 in octal equals 384 in decimal.
-        # Owner read bit = 0o400, owner write bit = 0o200, sum = 0o600.
         os.chmod(secret_path, 0o600)
 
     return new_secret

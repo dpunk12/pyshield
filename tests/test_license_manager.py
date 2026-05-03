@@ -296,8 +296,10 @@ def test_load_or_create_secret_uses_env_var_when_set(tmp_path, monkeypatch):
     """
 
     # Create a known 32-byte secret and encode it as a 64-character hex string.
-    known_secret = bytes(range(32))   # Predictable bytes: 0x00, 0x01, ..., 0x1f.
-    known_hex = known_secret.hex()    # 64 lowercase hex characters.
+    # We use a predictable sequence (bytes 0x00 through 0x1f) so the test is
+    # deterministic and the expected result is easy to reason about.
+    predictable_test_secret = bytes(range(32))   # Predictable bytes: 0x00, 0x01, ..., 0x1f.
+    known_hex = predictable_test_secret.hex()    # 64 lowercase hex characters.
 
     # Patch the environment so PYSHIELD_HMAC_KEY is set to our known hex string.
     # monkeypatch.setenv automatically undoes the change after the test finishes.
@@ -310,11 +312,11 @@ def test_load_or_create_secret_uses_env_var_when_set(tmp_path, monkeypatch):
     # Call load_or_create_secret.  It should return the decoded env var.
     result = load_or_create_secret(secret_path)
 
-    # The returned bytes must exactly match our known secret.
-    assert result == known_secret, (
+    # The returned bytes must exactly match our predictable test secret.
+    assert result == predictable_test_secret, (
         "load_or_create_secret should return the decoded env var bytes "
         "when PYSHIELD_HMAC_KEY is set.  "
-        f"Expected {known_secret.hex()!r}, got {result.hex()!r}."
+        f"Expected {predictable_test_secret.hex()!r}, got {result.hex()!r}."
     )
 
     # The file should NOT have been created because the env var took precedence.

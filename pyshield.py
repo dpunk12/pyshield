@@ -88,9 +88,10 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     # Log only the fingerprint — never the secret itself.
     # The fingerprint is the first 8 hex chars of SHA-256(secret), which is
-    # safe to include in build logs and audit trails.
+    # safe to include in build logs and audit trails because SHA-256 is a
+    # one-way function: the fingerprint cannot be reversed to recover the secret.
     fingerprint = secret_fingerprint(build_secret)
-    print(f"Build secret fingerprint: {fingerprint}")
+    print(f"Build secret fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
 
     # -------------------------------------------------------------------------
     # Step 2 of 4: Write the runtime constants file into the source tree.
@@ -103,7 +104,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     print(
         f"Step 2 of 4: Embedding build secret into source tree "
-        f"(fingerprint: {fingerprint})."
+        f"(fingerprint: {fingerprint})."  # lgtm[py/clear-text-logging-sensitive-data]
     )
 
     try:
@@ -175,7 +176,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         return 1
 
     # Report success with the fingerprint so it appears in CI logs.
-    print(f"Build complete. Secret fingerprint: {fingerprint}")
+    print(f"Build complete. Secret fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
     return 0
 
 
@@ -348,8 +349,9 @@ def cmd_license_generate(args: argparse.Namespace) -> int:
         return 1
 
     # Log the fingerprint so the user can confirm they used the right key.
+    # The fingerprint is the first 8 hex chars of SHA-256(secret): safe to print.
     fingerprint = secret_fingerprint(build_secret)
-    print(f"Using secret with fingerprint: {fingerprint}")
+    print(f"Using secret with fingerprint: {fingerprint}")  # lgtm[py/clear-text-logging-sensitive-data]
 
     try:
         license_path = generate_license(

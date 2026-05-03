@@ -47,6 +47,7 @@
 import datetime   # Used to compute yesterday's date for the expired license test.
 import json       # Used to read and modify license JSON files in tests.
 import os         # Used to read file sizes, copy files, and check existence.
+import pathlib    # Used to read the secret file when passing it to _make_license.
 import shutil     # Used to copy the binary before tampering with it.
 import subprocess # Used to run the binary and the pyshield CLI.
 import sys        # Used to find the Python executable and detect the platform.
@@ -380,7 +381,6 @@ def test_expired_license_is_rejected(built_demo, tmp_path):
 
     # Read the build secret from the secret file so we can sign the license
     # with the same key that was embedded in the binary.
-    import pathlib
     build_secret = pathlib.Path(secret_path).read_bytes()
 
     # Create a license that expired yesterday using the _make_license helper.
@@ -433,7 +433,6 @@ def test_wrong_machine_license_is_rejected(built_demo, tmp_path):
     repo_root = _repo_root()
 
     # Read the build secret from the secret file.
-    import pathlib
     build_secret = pathlib.Path(secret_path).read_bytes()
 
     # Create a license locked to a fake machine ID.
