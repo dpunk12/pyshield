@@ -235,11 +235,16 @@ def test_protected_binary_runs_correctly(built_demo, tmp_path):
 
     # Assert byte-for-byte equality.  This is stronger than checking a few rows —
     # it proves the entire output matches every decimal place exactly.
+    # Compute the position of the first difference for a useful failure message.
+    first_diff_pos = next(
+        (i for i, (a, b) in enumerate(zip(actual_content, expected_content)) if a != b),
+        len(expected_content),
+    )
     assert actual_content == expected_content, (
         "Protected binary output does not match expected_output.csv. "
         "This means the protection changed the algorithm's behaviour, which "
         "is a critical failure. "
-        f"First difference at character {next((i for i, (a, b) in enumerate(zip(actual_content, expected_content)) if a != b), len(expected_content))}."
+        f"First difference at character {first_diff_pos}."
     )
 
 

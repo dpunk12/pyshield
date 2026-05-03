@@ -132,9 +132,15 @@ def built_demo(tmp_path_factory):
 
     # If the build failed, skip the tests with a clear explanation.
     if build_result.returncode != 0:
-        error_summary = (
-            (build_result.stderr or build_result.stdout or "no output")[:500]
-        )
+        # Limit the error summary to keep the skip message readable, but
+        # add an indicator when the output was truncated so the reader knows
+        # to check the full CI log for more context.
+        raw_error = build_result.stderr or build_result.stdout or "no output"
+        truncate_limit = 500
+        if len(raw_error) > truncate_limit:
+            error_summary = raw_error[:truncate_limit] + " ... (truncated — see full log)"
+        else:
+            error_summary = raw_error
         pytest.skip(
             f"Demo app build failed (exit code {build_result.returncode}). "
             f"Error: {error_summary}"

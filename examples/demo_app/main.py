@@ -70,8 +70,8 @@ def cmd_process(args: argparse.Namespace) -> int:
             return 1
 
     # --- Step 2 (or 1 if no license): Load the input CSV file. ---
-    load_step = 1 + (0 if args.license else 0)
-    actual_step = load_step if not args.license else 2
+    # When a license was validated, the load step is step 2; otherwise step 1.
+    actual_step = 2 if args.license else 1
     print(f"Step {actual_step} of {total_steps}: Loading input file: {args.input}")
 
     try:
